@@ -115,6 +115,23 @@ class WyzeStream:
         publish_discovery(self.uri, self.camera)
 
     @property
+    def lan_engine(self) -> bool:
+        """True when the pure-Python LAN engine is the camera's transport."""
+        return self.camera.is_gwell and env_bool("OG_LAN")
+
+    @property
+    def control_support(self) -> list[str]:
+        """UI command groups this camera can actually honour.
+
+        The LAN engine carries media only; its device control channel is not
+        implemented, so camera-side commands and motion events stay out of the
+        UI instead of failing after a ten second wait.
+        """
+        if self.lan_engine:
+            return ["state"]
+        return ["power", "state", "night_vision", "motion"]
+
+    @property
     def state(self) -> int:
         return self._state.value
 
@@ -266,6 +283,8 @@ class WyzeStream:
             "substream": self.options.substream,
             "model_name": self.camera.model_name,
             "is_2k": self.camera.is_2k,
+            "lan_engine": self.lan_engine,
+            "controls": self.control_support,
             "rtsp_fw": self.camera.rtsp_fw,
             "rtsp_fw_enabled": self.rtsp_fw_enabled,
             "is_battery": self.camera.is_battery,
