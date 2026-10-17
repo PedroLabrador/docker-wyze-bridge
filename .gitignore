@@ -8,3 +8,7 @@
 *.env
 *.pyc
 !/app/.env
+
+# LAN engine session material (never commit)
+config/
+**/og_calling.json
