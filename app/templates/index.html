@@ -148,9 +148,11 @@
                         <i class="fas fa-battery-empty" aria-hidden="true"></i>
                     </span>
                     {% endif %}
+                    {% if "motion" in camera.controls %}
                     <span class="icon motion is-hidden" title="Motion Detected">
                         <i class="fas fa-person-running" aria-hidden="true"></i>
                     </span>
+                    {% endif %}
                 </div>
                 <span class="drag_handle" draggable="true"></span>
                 <button class="card-header-icon toggle-details" data-cam="{{cam_uri}}" title="Camera details">
@@ -232,12 +234,15 @@
                     </div>
                     <div class="dropdown-menu" role="menu">
                         <div class="dropdown-content cam-control" data-cam="{{cam_uri}}">
+                            {% if "power" in camera.controls %}
                             <p class="menu-label dropdown-item"><i class="fas fa-power-off"></i> Power</p>
                             <div class="buttons are-small is-centered">
                                 <button class="button" data-cmd="power" data-payload="on">On</button>
                                 <button class="button" data-cmd="power" data-payload="off">Off</button>
                                 <button class="button" data-cmd="power" data-payload="restart">Restart</button>
                             </div>
+                            {% endif %}
+                            {% if "state" in camera.controls %}
                             <p class="menu-label dropdown-item"><i class="fas fa-video"></i> Stream</p>
                             <div class="buttons are-small is-centered">
                                 <button class="button" data-cmd="state" data-payload="enable">
@@ -259,12 +264,15 @@
                                         <i class="fas fa-circle-pause" aria-hidden="true"></i></span>
                                     <span>Stop</span></button>
                             </div>
+                            {% endif %}
+                            {% if "night_vision" in camera.controls %}
                             <p class="menu-label dropdown-item"><i class="fas fa-moon"></i> Night Vision</p>
                             <div class="buttons are-small is-centered">
                                 <button class="button" data-cmd="night_vision" data-payload="on">On</button>
                                 <button class="button" data-cmd="night_vision" data-payload="off">Off</button>
                                 <button class="button" data-cmd="night_vision" data-payload="auto">Auto</button>
                             </div>
+                            {% endif %}
                         </div>
                     </div>
                 </div>

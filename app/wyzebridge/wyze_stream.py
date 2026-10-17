@@ -27,8 +27,8 @@ from wyzecam import TutkError, WyzeAccount, WyzeCamera, WyzeIOTC, WyzeIOTCSessio
 NET_MODE = {0: "P2P", 1: "RELAY", 2: "LAN"}
 
 
-StreamTuple = namedtuple("stream", ["user", "camera", "options"])
-QueueTuple = namedtuple("queue", ["cam_resp", "cam_cmd"])
+StreamTuple = namedtuple("StreamTuple", ["user", "camera", "options"])
+QueueTuple = namedtuple("QueueTuple", ["cam_resp", "cam_cmd"])
 
 
 class StreamStatus(IntEnum):
@@ -96,7 +96,11 @@ class WyzeStream:
         self.setup()
 
     def setup(self):
-        if self.camera.is_gwell or self.camera.product_model == "LD_CFP":
+        # Gwell-based models are rejected by the bundled SDK -- which is why the
+        # LAN engine exists -- so keep the gate only when it is not selected.
+        if (self.camera.is_gwell and not env_bool("OG_LAN")) or (
+            self.camera.product_model == "LD_CFP"
+        ):
             logger.info(
                 f"[{self.camera.product_model}] {self.camera.nickname} not supported"
             )
@@ -109,6 +113,23 @@ class WyzeStream:
 
         self.options.update_quality(hq_size)
         publish_discovery(self.uri, self.camera)
+
+    @property
+    def lan_engine(self) -> bool:
+        """True when the pure-Python LAN engine is the camera's transport."""
+        return self.camera.is_gwell and env_bool("OG_LAN")
+
+    @property
+    def control_support(self) -> list[str]:
+        """UI command groups this camera can actually honour.
+
+        The LAN engine carries media only; its device control channel is not
+        implemented, so camera-side commands and motion events stay out of the
+        UI instead of failing after a ten second wait.
+        """
+        if self.lan_engine:
+            return ["state"]
+        return ["power", "state", "night_vision", "motion"]
 
     @property
     def state(self) -> int:
@@ -156,8 +177,11 @@ class WyzeStream:
         self.start_time = time()
         self.cam_resp = mp.Queue(1)
         self.cam_cmd = mp.Queue(1)
+        # OG_LAN=1 selects the pure-Python LAN engine (start_og_stream);
+        # the default stays the cloud/SDK session path.
+        target = start_og_stream if env_bool("OG_LAN") else start_tutk_stream
         self.process = mp.Process(
-            target=start_tutk_stream,
+            target=target,
             args=(
                 self.uri,
                 StreamTuple(self.user, self.camera, self.options),
@@ -259,6 +283,8 @@ class WyzeStream:
             "substream": self.options.substream,
             "model_name": self.camera.model_name,
             "is_2k": self.camera.is_2k,
+            "lan_engine": self.lan_engine,
+            "controls": self.control_support,
             "rtsp_fw": self.camera.rtsp_fw,
             "rtsp_fw_enabled": self.rtsp_fw_enabled,
             "is_battery": self.camera.is_battery,
@@ -464,6 +490,49 @@ def start_tutk_stream(uri: str, stream: StreamTuple, queue: QueueTuple, state: c
         state.value = exit_code
         stop_and_wait(audio_thread)
         stop_and_wait(control_thread)
+
+
+def start_og_stream(uri: str, stream: StreamTuple, queue: QueueTuple, state: c_int):
+    """Connect and stream through the LAN P2P engine (OG cameras).
+
+    Mirrors start_tutk_stream.  There is no control thread: the LAN engine
+    carries no control channel, so camera commands are unavailable here.
+    """
+    from wyzebridge.og_session import OGSession
+
+    was_offline = state.value == StreamStatus.OFFLINE
+    state.value = StreamStatus.CONNECTING
+    exit_code = StreamStatus.STOPPING
+    audio_thread = None
+    try:
+        with OGSession(stream, state) as sess:
+            assert state.value >= StreamStatus.CONNECTING, "Stream Stopped"
+            v_codec, audio = get_cam_params(sess, uri)
+            audio_thread = setup_audio(sess, uri)
+
+            ffmpeg_cmd = get_ffmpeg_cmd(
+                uri, v_codec, audio, stream.camera.is_vertical, live=True
+            )
+            assert state.value >= StreamStatus.CONNECTING, "Stream Stopped"
+            state.value = StreamStatus.CONNECTED
+            with Popen(ffmpeg_cmd, stdin=PIPE) as ffmpeg:
+                for frame in sess.recv_bridge_data():
+                    ffmpeg.stdin.write(frame)
+
+    except TutkError as ex:
+        logger.warning(f"{[ex.code]} {ex}")
+        set_cam_offline(uri, ex, was_offline)
+        if ex.code in {-10, -13, -19, -68, -90}:
+            exit_code = ex.code
+    except BrokenPipeError:
+        logger.info("FFMPEG stopped")
+    except Exception as ex:
+        logger.warning(f"[{type(ex).__name__}] {ex}")
+    else:
+        logger.warning("Stream stopped")
+    finally:
+        state.value = exit_code
+        stop_and_wait(audio_thread)
 
 
 def stop_and_wait(thread: Optional[Thread]):
