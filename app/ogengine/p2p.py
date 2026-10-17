@@ -48,14 +48,16 @@ def discover(duration=3.0, want_tid=None, broadcast=None):
     rx.setblocking(False)
     tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     tx.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-    # The camera only answers on its own subnet, and the host may have
-    # other routes, so probe an explicit subnet when one is known and fall
-    # back to the limited-broadcast address as well.
-    targets = list(broadcast) if broadcast else []
-    if BROADCAST not in targets:
-        targets.append(BROADCAST)
-    for target in targets:
-        tx.sendto(build_probe(rx.getsockname()[1]), (target, BROADCAST_PORT))
+    # Targets can be a subnet broadcast, the limited broadcast, or the camera's
+    # own address (a unicast probe works too).  Some networks -- and NAT'd
+    # containers in particular -- only allow some of them, so send best-effort
+    # to each and rely on whatever answers.
+    probe = build_probe(rx.getsockname()[1])
+    for target in (list(broadcast) if broadcast else [BROADCAST]):
+        try:
+            tx.sendto(probe, (target, BROADCAST_PORT))
+        except OSError:
+            pass
 
     found = {}
     end = time.time() + duration

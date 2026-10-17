@@ -48,6 +48,7 @@ from contextlib import contextmanager
 from wyzebridge.logging import logger
 
 from ogengine import kcpav, p2p
+from ogengine.discover import BROADCAST, subnet_broadcast
 
 # The camera's audio is G.711 mu-law, 16 kHz, one byte per sample with no
 # container of its own: ffmpeg reads it as `-f mulaw -ar 16000 -ac 1`.
@@ -155,13 +156,25 @@ class OGSession:
         )
         return client
 
+    def _targets(self) -> list:
+        """Probe targets for this camera: its own address first, then its /24.
+
+        A unicast probe is answered just like a broadcast one, and it is the
+        only form that survives NAT -- relevant when the bridge runs in a
+        container whose network drops broadcasts.
+        """
+        ip = self.camera.ip or ""
+        targets = [ip] if ip.count(".") == 3 else []
+        subnet = subnet_broadcast(ip) if targets else BROADCAST
+        return targets + [subnet] if subnet not in targets else targets
+
     def _find_camera(self) -> dict:
         """Locate the camera on the LAN.  Its P2P port is not stable."""
         want_mac = (self.camera.mac or "").upper()
         want_ip = self.camera.ip or ""
         found: dict = {}
         for attempt in range(1, DISCOVERY_ATTEMPTS + 1):
-            found = p2p.discover(DISCOVERY_SECONDS)
+            found = p2p.discover(DISCOVERY_SECONDS, broadcast=self._targets())
             if found:
                 break
             logger.info("LAN discovery attempt %d found nothing", attempt)

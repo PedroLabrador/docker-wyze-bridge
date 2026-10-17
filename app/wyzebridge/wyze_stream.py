@@ -96,7 +96,11 @@ class WyzeStream:
         self.setup()
 
     def setup(self):
-        if self.camera.is_gwell or self.camera.product_model == "LD_CFP":
+        # Gwell-based models are rejected by the bundled SDK -- which is why the
+        # LAN engine exists -- so keep the gate only when it is not selected.
+        if (self.camera.is_gwell and not env_bool("OG_LAN")) or (
+            self.camera.product_model == "LD_CFP"
+        ):
             logger.info(
                 f"[{self.camera.product_model}] {self.camera.nickname} not supported"
             )
