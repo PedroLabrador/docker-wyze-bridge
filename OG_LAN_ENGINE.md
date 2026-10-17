@@ -90,6 +90,9 @@ broadcast probe works and this is unnecessary.
   from.  The ffmpeg command for this source is built with `live=True`, which
   re-encodes (the decoder reads the frame rate from the stream itself) and
   forces an IDR every 2 s.  The cloud/TUTK path is unchanged and still copies.
+  This costs CPU, so `H264_ENC` is worth pointing at a hardware encoder: at
+  1080p20, libx264 `ultrafast` encoded at ~0.85x realtime on an M-series laptop
+  while `h264_videotoolbox` managed ~10x.
 * **Audio** is 16 kHz mu-law, and the bridge's own audio thread writes it to the
   FIFO.  The session pumps the camera's single socket once and fans the two
   streams out over queues, because the engine's video and audio readers must not
