@@ -97,6 +97,10 @@ def discover(duration=3.0, want_tid=None, broadcast=None):
             found[dev["ip"]] = {"tid": dev["tid"], "p2p_port": dev["p2p_port"],
                                 "wyze_id": dev.get("wyze_id"),
                                 "mac": dev.get("mac")}
+            if _unicast(target):
+                # Only one camera lives at that address, so there is nothing
+                # else to hear from it: do not idle out the rest of the window.
+                break
     rx.close()
     tx.close()
     return found
