@@ -156,8 +156,11 @@ class WyzeStream:
         self.start_time = time()
         self.cam_resp = mp.Queue(1)
         self.cam_cmd = mp.Queue(1)
+        # OG_LAN=1 selects the pure-Python LAN engine (start_og_stream);
+        # the default stays the cloud/SDK session path.
+        target = start_og_stream if env_bool("OG_LAN") else start_tutk_stream
         self.process = mp.Process(
-            target=start_tutk_stream,
+            target=target,
             args=(
                 self.uri,
                 StreamTuple(self.user, self.camera, self.options),
@@ -464,6 +467,47 @@ def start_tutk_stream(uri: str, stream: StreamTuple, queue: QueueTuple, state: c
         state.value = exit_code
         stop_and_wait(audio_thread)
         stop_and_wait(control_thread)
+
+
+def start_og_stream(uri: str, stream: StreamTuple, queue: QueueTuple, state: c_int):
+    """Connect and stream through the LAN P2P engine (OG cameras).
+
+    Mirrors start_tutk_stream.  There is no control thread: the LAN engine
+    carries no control channel, so camera commands are unavailable here.
+    """
+    from wyzebridge.og_session import OGSession
+
+    was_offline = state.value == StreamStatus.OFFLINE
+    state.value = StreamStatus.CONNECTING
+    exit_code = StreamStatus.STOPPING
+    audio_thread = None
+    try:
+        with OGSession(stream, state) as sess:
+            assert state.value >= StreamStatus.CONNECTING, "Stream Stopped"
+            v_codec, audio = get_cam_params(sess, uri)
+            audio_thread = setup_audio(sess, uri)
+
+            ffmpeg_cmd = get_ffmpeg_cmd(uri, v_codec, audio, stream.camera.is_vertical)
+            assert state.value >= StreamStatus.CONNECTING, "Stream Stopped"
+            state.value = StreamStatus.CONNECTED
+            with Popen(ffmpeg_cmd, stdin=PIPE) as ffmpeg:
+                for frame in sess.recv_bridge_data():
+                    ffmpeg.stdin.write(frame)
+
+    except TutkError as ex:
+        logger.warning(f"{[ex.code]} {ex}")
+        set_cam_offline(uri, ex, was_offline)
+        if ex.code in {-10, -13, -19, -68, -90}:
+            exit_code = ex.code
+    except BrokenPipeError:
+        logger.info("FFMPEG stopped")
+    except Exception as ex:
+        logger.warning(f"[{type(ex).__name__}] {ex}")
+    else:
+        logger.warning("Stream stopped")
+    finally:
+        state.value = exit_code
+        stop_and_wait(audio_thread)
 
 
 def stop_and_wait(thread: Optional[Thread]):
