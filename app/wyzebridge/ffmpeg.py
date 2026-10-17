@@ -10,7 +10,8 @@ from wyzebridge.logging import logger
 
 
 def get_ffmpeg_cmd(
-    uri: str, vcodec: str, audio: dict, is_vertical: bool = False
+    uri: str, vcodec: str, audio: dict, is_vertical: bool = False,
+    live: bool = False,
 ) -> list[str]:
     """
     Return the ffmpeg cmd with options from the env.
@@ -29,6 +30,15 @@ def get_ffmpeg_cmd(
 
     Returns:
     - list of str: complete ffmpeg command that is ready to run as subprocess.
+
+    - live (bool, optional): the video comes from a raw pipe (LAN engine) that
+      carries no timing of its own.  The small probe budget above also stops
+      ffmpeg from inferring a frame rate ("not enough frames to estimate
+      rate"), so a stream copy would reach the muxer without timestamps and
+      MediaMTX would have no timeline to cut segments from (HLS never starts,
+      snapshots time out).  Re-encoding hands the timeline to the decoder,
+      which reads the frame rate from the stream itself, and the forced IDR
+      interval gives HLS a segment boundary every 2s.
     """
 
     flags = "-fflags +flush_packets+nobuffer -flags +low_delay"
@@ -65,7 +75,7 @@ def get_ffmpeg_cmd(
         + ["-f", vcodec, "-i", "pipe:0"]
         + audio_in.split()
         + ["-map", "0:v", "-c:v"]
-        + re_encode_video(uri, is_vertical)
+        + re_encode_video(uri, is_vertical, force=live)
         + (["-map", "1:a", "-c:a", audio_out] if audio_in else [])
         + (a_options if audio and audio_out != "copy" else [])
         + ["-fps_mode", "passthrough", "-flush_packets", "1"]
@@ -98,13 +108,16 @@ def get_log_level():
     return "verbose"
 
 
-def re_encode_video(uri: str, is_vertical: bool) -> list[str]:
+def re_encode_video(uri: str, is_vertical: bool, force: bool = False) -> list[str]:
     """
     Check if stream needs to be re-encoded.
 
     Parameters:
     - uri (str): uri of the stream used to lookup ENV parameters.
     - is_vertical (bool): indicate if the original stream is vertical.
+    - force (bool): re-encode regardless of the env.  Set for sources that
+      arrive without container timing (see `get_ffmpeg_cmd(..., live=True)`),
+      where a stream copy would have no timeline for the muxer.
 
     Returns:
     - list of str: ffmpeg compatible list to be used as a value for `-c:v`.
@@ -134,7 +147,7 @@ def re_encode_video(uri: str, is_vertical: bool) -> list[str]:
         elif h264_enc == "h264_qsv":
             v_filter[1] = f"vpp_qsv=transpose={transpose}"
 
-    if not (env_bool("FORCE_ENCODE") or v_filter or custom_filter or filter_complex):
+    if not (force or env_bool("FORCE_ENCODE") or v_filter or custom_filter or filter_complex):
         return ["copy"]
 
     logger.info(

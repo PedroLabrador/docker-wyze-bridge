@@ -27,8 +27,8 @@ from wyzecam import TutkError, WyzeAccount, WyzeCamera, WyzeIOTC, WyzeIOTCSessio
 NET_MODE = {0: "P2P", 1: "RELAY", 2: "LAN"}
 
 
-StreamTuple = namedtuple("stream", ["user", "camera", "options"])
-QueueTuple = namedtuple("queue", ["cam_resp", "cam_cmd"])
+StreamTuple = namedtuple("StreamTuple", ["user", "camera", "options"])
+QueueTuple = namedtuple("QueueTuple", ["cam_resp", "cam_cmd"])
 
 
 class StreamStatus(IntEnum):
@@ -491,7 +491,9 @@ def start_og_stream(uri: str, stream: StreamTuple, queue: QueueTuple, state: c_i
             v_codec, audio = get_cam_params(sess, uri)
             audio_thread = setup_audio(sess, uri)
 
-            ffmpeg_cmd = get_ffmpeg_cmd(uri, v_codec, audio, stream.camera.is_vertical)
+            ffmpeg_cmd = get_ffmpeg_cmd(
+                uri, v_codec, audio, stream.camera.is_vertical, live=True
+            )
             assert state.value >= StreamStatus.CONNECTING, "Stream Stopped"
             state.value = StreamStatus.CONNECTED
             with Popen(ffmpeg_cmd, stdin=PIPE) as ffmpeg:
