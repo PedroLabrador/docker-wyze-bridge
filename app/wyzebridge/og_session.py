@@ -156,6 +156,24 @@ class OGSession:
         )
         return client
 
+    def _configured_ip(self) -> str:
+        """This camera's LAN address, from OG_CAMERAS when set.
+
+        A container whose network drops broadcasts cannot learn the address
+        from a reply, so it can be supplied instead:
+
+            OG_CAMERAS="GW_GC1_000000000001=192.168.1.50,other=192.168.1.51"
+
+        The left side matches the camera's MAC or its nickname; the right side
+        is its address on the LAN.
+        """
+        keys = {(self.camera.mac or "").upper(), (self.camera.nickname or "").upper()}
+        for item in os.environ.get("OG_CAMERAS", "").split(","):
+            name, _, ip = item.partition("=")
+            if name.strip().upper() in keys and ip.strip().count(".") == 3:
+                return ip.strip()
+        return ""
+
     def _targets(self) -> list:
         """Probe targets for this camera: its own address first, then its /24.
 
@@ -163,7 +181,7 @@ class OGSession:
         only form that survives NAT -- relevant when the bridge runs in a
         container whose network drops broadcasts.
         """
-        ip = self.camera.ip or ""
+        ip = self.camera.ip or self._configured_ip()
         targets = [ip] if ip.count(".") == 3 else []
         subnet = subnet_broadcast(ip) if targets else BROADCAST
         return targets + [subnet] if subnet not in targets else targets
@@ -171,17 +189,21 @@ class OGSession:
     def _find_camera(self) -> dict:
         """Locate the camera on the LAN.  Its P2P port is not stable."""
         want_mac = (self.camera.mac or "").upper()
-        want_ip = self.camera.ip or ""
+        want_ip = self.camera.ip or self._configured_ip()
         found: dict = {}
         for attempt in range(1, DISCOVERY_ATTEMPTS + 1):
             found = p2p.discover(DISCOVERY_SECONDS, broadcast=self._targets())
             if found:
                 break
             logger.info("LAN discovery attempt %d found nothing", attempt)
-        for dev in found.values():
+        for ip, dev in found.items():
             got = (dev.get("wyze_id") or dev.get("mac") or "").upper()
-            if (want_mac and got == want_mac) or (want_ip and dev["ip"] == want_ip):
-                return dev
+            if (want_mac and got == want_mac) or (want_ip and ip == want_ip):
+                return dev | {"ip": ip}
+        logger.info(
+            "%s: %d device(s) answered discovery, none matched %s",
+            self.camera.name_uri, len(found), want_mac or want_ip or "?",
+        )
         raise RuntimeError(
             "camera %s not on the LAN (%d device(s) answered)"
             % (self.camera.name_uri, len(found))

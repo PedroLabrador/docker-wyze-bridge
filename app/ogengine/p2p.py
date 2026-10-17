@@ -36,11 +36,22 @@ from .discover import (build_probe, parse_reply,          # noqa: E402
                       BROADCAST, BROADCAST_PORT)
 
 
-def discover(duration=3.0, want_tid=None, broadcast=None):
-    """Broadcast-probe the LAN.  Returns {ip: {"tid","p2p_port"}}.
+def _unicast(target: str) -> bool:
+    """True for a single host address, False for a broadcast address."""
+    return target != "255.255.255.255" and not target.endswith(".255")
 
-    Ports are NOT stable, so this must be re-run at the start of every
-    session.  It is also flaky -- callers should retry.
+
+def discover(duration=3.0, want_tid=None, broadcast=None):
+    """Probe for cameras.  Returns {ip: {"tid","p2p_port","wyze_id","mac"}}.
+
+    Ports are NOT stable, so this must be re-run at the start of every session.
+    It is also flaky -- callers should retry.
+
+    Targets may be the limited broadcast, a subnet broadcast, or a camera's own
+    address.  A unicast target is the only form that works where broadcast is
+    not forwarded (a NAT'd container, for instance), and it is probed one at a
+    time so that a reply can be attributed to the address it was sent to: a NAT
+    may rewrite the reply's source address.
     """
     rx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     rx.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -53,32 +64,39 @@ def discover(duration=3.0, want_tid=None, broadcast=None):
     # containers in particular -- only allow some of them, so send best-effort
     # to each and rely on whatever answers.
     probe = build_probe(rx.getsockname()[1])
-    for target in (list(broadcast) if broadcast else [BROADCAST]):
+    targets = list(broadcast) if broadcast else [BROADCAST]
+    window = max(0.5, duration / len(targets))
+
+    found = {}
+    for target in targets:
         try:
             tx.sendto(probe, (target, BROADCAST_PORT))
         except OSError:
-            pass
-
-    found = {}
-    end = time.time() + duration
-    while time.time() < end:
-        r, _, _ = select.select([rx], [], [], 0.25)
-        if not r:
             continue
-        try:
-            data, addr = rx.recvfrom(4096)
-        except OSError:
-            continue
-        dev = parse_reply(data, addr)
-        if not dev:
-            continue
-        if want_tid and str(dev["tid"]) != str(want_tid):
-            continue
-        # keep wyze_id/mac too: device nicknames are resolved from the
-        # cloud device list, which is keyed by that id.
-        found[dev["ip"]] = {"tid": dev["tid"], "p2p_port": dev["p2p_port"],
-                            "wyze_id": dev.get("wyze_id"),
-                            "mac": dev.get("mac")}
+        end = time.time() + window
+        while time.time() < end:
+            r, _, _ = select.select([rx], [], [], 0.25)
+            if not r:
+                continue
+            try:
+                data, addr = rx.recvfrom(4096)
+            except OSError:
+                continue
+            dev = parse_reply(data, addr)
+            if not dev:
+                continue
+            if _unicast(target):
+                # A NAT may rewrite the reply's source address (Docker's
+                # userland stack reports the local proxy), so a unicast probe
+                # is attributed to the address it was sent to.
+                dev["ip"] = target
+            if want_tid and str(dev["tid"]) != str(want_tid):
+                continue
+            # keep wyze_id/mac too: device nicknames are resolved from the
+            # cloud device list, which is keyed by that id.
+            found[dev["ip"]] = {"tid": dev["tid"], "p2p_port": dev["p2p_port"],
+                                "wyze_id": dev.get("wyze_id"),
+                                "mac": dev.get("mac")}
     rx.close()
     tx.close()
     return found
@@ -158,28 +176,25 @@ def rc5_encrypt_stream(key, data):
 
 # ---- the client -> camera audio (talk) -----------------------------------
 #
-# Reversed from a PCAPdroid capture of the app holding the talk button.  The
-# app pushes linktype-4 media on the LOW conv (the AvStreamCtl goes on the high
-# one), and the body is RC5 with the same AV key as the incoming media.
+# Talk media travels on the LOW conv (the AvStreamCtl goes on the high one),
+# and the body is RC5 with the same AV key as the incoming media::
 #
 #   0   ff ff ff 88       AV sync
 #   4   00 00 03 00
 #   8   00 x12
-#   20  u32 counter       increments 60 per frame in the app
+#   20  u32 counter       advances 60 per frame
 #   24  00 00 00 00
 #   28  40 00 40 00 40 00
 #   34  6 x (0x3c + 31 B) six AMR-NB frames
 #
 # Each sub-frame is RFC 4867 octet-aligned AMR-NB: the ToC octet 0x3c is
 # FT=7, i.e. the 12.2 kbit/s mode, whose 244-bit frames are stored in 31
-# bytes.  Six 20 ms frames is 120 ms, which matches the observed send
-# interval and byte rate.  Verified by decoding the capture to speech and by
-# re-encoding silence with ffmpeg (same ToC, same frame size).
+# bytes.  Six 20 ms frames is 120 ms, which is the packet's send interval.
 TALK_AMR_FRAME = 32                   # 1 byte ToC + 31 bytes payload
 TALK_AMR_TOC = 0x3C                   # AMR-NB FT 7 (12.2 kbit/s)
 TALK_FRAMES_PER_PKT = 6               # 6 x 20 ms = 120 ms
 TALK_PKT_BYTES = 34 + TALK_AMR_FRAME * TALK_FRAMES_PER_PKT     # 226
-TALK_COUNTER_STEP = 60                # what the app advances it by
+TALK_COUNTER_STEP = 60                # counter advance per frame
 
 # The two frames the app sends the moment the talk button goes down, before any
 # audio.  The first is 28 B -- 16 kHz (0x3e80) and 320 samples (0x0140) at
@@ -351,13 +366,13 @@ class CameraStream(object):
             ...and they may be *nested* inside the same TLV as video (a
             350-byte audio frame followed by video bytes), or several audio
             frames packed back to back (700 / 1004 byte bodies), or preceded
-            by the 28-byte stream descriptor (see wire/p2p_frames.json).
+            by the 28-byte stream descriptor.
 
         So: append every body to the H.264 feed untouched, and additionally
         carve the audio payloads out of it.  This is safe because a mu-law
-        payload never contains an Annex-B start code -- measured over the
-        audio-classified bodies, every `00 00 01` sat at an AV frame boundary,
-        never inside the 320-byte payload.
+        payload never contains an Annex-B start code: every `00 00 01` in an
+        audio-classified body sits at an AV frame boundary, never inside the
+        320-byte payload.
 
         Linktype 3 is AvStreamCtl (plaintext), ignored after the handshake.
         """
@@ -394,25 +409,23 @@ class CameraStream(object):
     def _take_audio_frames(self, pt):
         """Append the mu-law payload of each audio AV frame found in `pt`.
 
-        The frame header is (measured, two independent sessions)::
+        The frame header is::
 
             0   ff ff ff 88 00 00 01 00    sync
             8   00 x12                      reserved
             20  u32 timestamp, microseconds (advances 0x4e20 = 20000/frame)
-            24  u32 session byte, 0x87 in one session, 0x88 in another
+            24  u32 session byte, 0x87 or 0x88
             28  u16 payload length (320)
             30  mu-law payload
 
         Bytes [24:28] are NOT a constant, so only the sync, the 12 reserved
         zeros and a sane length are tested.  Video frames never carry the
-        12 zeros: in a 12 s capture 749 syncs split exactly into 512 audio
-        (12 zeros) + 237 video headers, and ffmpeg decoded 236 frames.
+        12 zeros, which is what tells the two kinds of record apart.
 
-        The camera drops roughly one audio frame in six (110 single 40000 us
-        gaps in 488 frames / 11.94 s in one sample), so every gap is
-        back-filled with mu-law digital zero (0xff decodes to 0).  Without
-        that, 152 kB of audio plays as a 9.5 s clip for a 12 s view: 26 %
-        fast and out of sync with the video.
+        The camera drops roughly one audio frame in six (a single 40000 us
+        gap), so every gap is back-filled with mu-law digital zero (0xff
+        decodes to 0).  Without that, the audio plays fast and drifts out of
+        sync with the video.
         """
         i = 0
         n = len(pt)

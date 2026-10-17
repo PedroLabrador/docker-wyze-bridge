@@ -49,6 +49,7 @@ image).  No cloud session, no bundled SDK, no third-party Python package.
 | `OG_LAN=1` | use this engine |
 | `OG_CALLING_FILE` | JSON holding the CALLING frame, default `/config/og_calling.json` |
 | `OG_BROADCAST` | optional discovery broadcast address, default `255.255.255.255` |
+| `OG_CAMERAS` | optional `mac-or-nickname=address` list, for networks that drop broadcasts |
 
 `OG_CALLING_FILE` accepts either shape:
 
@@ -60,6 +61,19 @@ image).  No cloud session, no bundled SDK, no third-party Python package.
 The CALLING frame is session key material: it belongs in the config volume,
 never in the repository.
 
+`OG_CAMERAS` is only needed where the bridge cannot see the LAN's broadcasts --
+a container behind Docker Desktop's userland NAT, for example.  There the reply
+to a unicast probe still arrives, but with its source address rewritten, so the
+camera's address has to be stated instead:
+
+```bash
+OG_CAMERAS="GW_GC1_000000000001=192.168.1.50,GW_GC1_000000000002=192.168.1.51"
+```
+
+Discovery then probes those addresses directly and attributes each reply to the
+address it was sent to.  On a Linux host with real host networking the
+broadcast probe works and this is unnecessary.
+
 ## Behaviour on this path
 
 * **Discovery** is LAN only: the camera is found by broadcast probe each time
@@ -69,10 +83,20 @@ never in the repository.
 * **Video** is native H.264.  `definition=2` asks for 1920x1080; `SUBSTREAM` or
   `options.substream` asks for the 640x360 sub-stream.  Scaling stays with
   ffmpeg/MediaMTX.
+* **Timing**: a raw pipe carries no timestamps, and the small probe budget the
+  bridge uses (`-probesize 32 -analyzeduration 32`) also stops ffmpeg from
+  inferring a frame rate.  A stream copy would therefore reach the muxer with no
+  timeline at all, and MediaMTX has nothing to cut HLS segments or snapshots
+  from.  The ffmpeg command for this source is built with `live=True`, which
+  re-encodes (the decoder reads the frame rate from the stream itself) and
+  forces an IDR every 2 s.  The cloud/TUTK path is unchanged and still copies.
 * **Audio** is 16 kHz mu-law, and the bridge's own audio thread writes it to the
   FIFO.  The session pumps the camera's single socket once and fans the two
   streams out over queues, because the engine's video and audio readers must not
-  run against the same socket concurrently.
+  run against the same socket concurrently.  ffmpeg re-encodes it to 8 kHz
+  PCMU, which RTSP clients and MediaMTX's WebRTC player accept.  MediaMTX
+  cannot put G.711 into HLS and skips that track, so HLS serves video only;
+  `AUDIO_CODEC=aac` trades browser-WebRTC audio for audio in HLS.
 * **Recovery**: 12 s without media triggers a fresh handshake inside the session
   (same process), so a camera that was busy or a Wi-Fi blip does not need a
   process restart.
@@ -96,4 +120,8 @@ OG_LAN=1 python3 app/ogengine/discover.py     # must list each camera
 ```
 
 With `OG_LAN=1` the log shows `LAN session to <name> at <ip>:<port> (1080p)`
-before ffmpeg starts.
+before ffmpeg starts.  A viewer should then get:
+
+* `rtsp://<host>:8554/<name>` — H.264 video plus PCMU audio;
+* `http://<host>:8888/<name>/index.m3u8` — HLS that actually plays;
+* `/snapshot/<name>.jpg` on the web UI port — a JPEG of the last keyframe.

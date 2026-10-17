@@ -89,8 +89,8 @@ def parse_reply(data, addr):
         "mac": mac,
         "wyze_id": wyze_id,
         # [28:36] u64 LE = the device / TID that every P2P frame addresses.
-        # (Earlier notes called [28:32] a constant; only the high dword is
-        # shared -- the whole qword is the per-device TID.)
+        # The high dword of that qword is shared between devices; the whole
+        # qword is the per-device TID, so it must not be treated as constant.
         "tid": struct.unpack_from("<Q", data, 28)[0],
         "wire_len": total,
         "raw": data.hex(),

@@ -25,8 +25,15 @@ ON_DEMAND: bool = bool(env_bool("on_demand") if getenv("ON_DEMAND") else True)
 CONNECT_TIMEOUT: int = env_bool("CONNECT_TIMEOUT", 20, style="int")
 
 # TODO: change TOKEN_PATH  to /config for all:
-TOKEN_PATH: str = "/config/" if HASS_TOKEN else "/tokens/"
-IMG_PATH: str = f'/{env_bool("IMG_DIR", "img").strip("/")}/'
+# Both keep their in-image defaults and accept an override: running the bridge
+# outside a container means "/" is not writable, so the state has to live
+# somewhere else.
+TOKEN_PATH: str = env_bool(
+    "TOKEN_PATH", "/config/" if HASS_TOKEN else "/tokens/"
+)
+IMG_PATH: str = env_bool(
+    "IMG_PATH", f'/{env_bool("IMG_DIR", "img").strip("/")}/'
+)
 
 SNAPSHOT_TYPE, SNAPSHOT_INT = split_int_str(env_bool("SNAPSHOT"), min=15, default=180)
 SNAPSHOT_FORMAT: str = env_bool("SNAPSHOT_FORMAT", style="original").strip("/")
