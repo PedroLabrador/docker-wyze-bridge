@@ -1,7 +1,7 @@
 # LAN engine for Wyze Cam OG (`OG_LAN`)
 
-This branch adds an alternative camera source: a pure-Python LAN client for
-Wyze Cam OG instead of the bundled cloud/SDK session path.  It is selected with
+Wyze Cam OG can be streamed by an alternative camera source: a pure-Python LAN
+client instead of the bundled cloud/SDK session path.  It is selected with
 `OG_LAN=1` and leaves the rest of the bridge (MediaMTX, RTSP/HLS/WebRTC, MQTT,
 Home Assistant discovery, the web UI, snapshots, recording, auth) untouched.
 

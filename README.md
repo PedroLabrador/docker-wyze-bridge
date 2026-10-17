@@ -41,8 +41,14 @@ Please consider ⭐️ starring or [☕️ sponsoring](https://ko-fi.com/mrlt8) 
 ![Wyze Cam Outdoor V2](https://img.shields.io/badge/wyze_outdoor_v2-yes-success.svg)
 ![Wyze Cam Doorbell](https://img.shields.io/badge/wyze_doorbell-yes-success.svg)
 ![Wyze Cam Doorbell V2](https://img.shields.io/badge/wyze_doorbell_v2-yes-success.svg)
+![Wyze Cam OG](https://img.shields.io/badge/wyze_cam_og-limited-yellow.svg)
 
 See the [supported cameras](#supported-cameras) section for additional information.
+
+> [!NOTE]
+> The Wyze Cam OG can be streamed over the local network with `OG_LAN=1`, without relying on the
+> bundled SDK. Camera commands (power, night vision, ...) and two-way audio are not implemented
+> yet. See [Wyze Cam OG](#wyze-cam-og-lan-engine).
 
 
 ## Quick Start
@@ -184,8 +190,52 @@ The container can be run on its own, in [Portainer](https://github.com/mrlt8/doc
 | Wyze Battery Cam Pro          | AN_RSCW        | [⚠️](https://github.com/mrlt8/docker-wyze-bridge/issues/1011) | -         |
 | Wyze Cam Flood Light Pro [2K] | LD_CFP         | [⚠️](https://github.com/mrlt8/docker-wyze-bridge/issues/822)  | -         |
 | Wyze Cam Doorbell Pro         | GW_BE1         | [⚠️](https://github.com/mrlt8/docker-wyze-bridge/issues/276)  | -         |
-| Wyze Cam OG                   | GW_GC1         | [⚠️](https://github.com/mrlt8/docker-wyze-bridge/issues/677)  | -         |
+| Wyze Cam OG                   | GW_GC1         | 🟡 [LAN engine](#wyze-cam-og-lan-engine)                       | -         |
 | Wyze Cam OG Telephoto 3x      | GW_GC2         | [⚠️](https://github.com/mrlt8/docker-wyze-bridge/issues/677)  | -         |
+
+### Wyze Cam OG (LAN engine)
+
+The Wyze Cam OG (`GW_GC1`) is not supported by the bundled SDK, so it can be streamed by a LAN-only
+engine instead when `OG_LAN=1` is set: the bridge authenticates to the camera on your own network
+and receives the media directly, with no cloud relay in the path.
+
+> [!NOTE]
+> The engine needs layer-2 access to the camera, so the container has to share the host network
+> (`network_mode: host`). Cameras are found with a broadcast probe of the local subnet; one that
+> stays silent can be pinned by address with `OG_CAMERAS`.
+
+**What works**
+
+| Feature             | Notes                                                                                                    |
+| ------------------- | -------------------------------------------------------------------------------------------------------- |
+| Video               | H.264 as delivered by the camera (1080p), ~20 fps                                                        |
+| Audio               | G.711 µ-law 16 kHz from the camera, published as PCMU 8 kHz by default (`AUDIO_CODEC=aac` for HLS audio) |
+| Outputs             | WebRTC, HLS, RTMP and RTSP via MediaMTX, same as any other camera                                        |
+| Snapshot / preview  | `/img`, `/snapshot` and `/thumbnail` behave as usual                                                     |
+| Bridge controls     | start / stop / enable / disable, MQTT state topics, recording                                            |
+| Sub-stream          | The camera's lower resolution stream, where it offers one                                                |
+
+**What is not available yet**
+
+- **Camera commands.** The device control channel is not implemented, so there is no power, night
+  vision, siren, spotlight, motion events or pan/tilt. The web-UI hides those controls for these
+  cameras rather than letting them fail.
+- **Two-way audio.** Talk/mic is not implemented.
+- **Cloud (TUTK) streaming.** The engine is LAN only: the camera must be reachable from the host
+  running the bridge.
+
+**Configuration**
+
+| ENV               | Default                    | Description                                                                                            |
+| ----------------- | -------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `OG_LAN`          | `false`                    | Stream the Wyze Cam OG with the LAN engine                                                             |
+| `OG_CALLING_FILE` | `/config/og_calling.json`  | Per-install session key material; keep it out of version control                                       |
+| `OG_CAMERAS`      |                            | Optional `ID=IP` list to pin cameras discovery does not find, e.g. `GW_GC1_000000000001=192.168.1.50`  |
+| `OG_BROADCAST`    | `255.255.255.255`          | Optional discovery broadcast address                                                                   |
+| `H264_ENC`        | `libx264`                  | Re-encode codec; pick a hardware encoder (`h264_vaapi`, `h264_qsv`, `h264_videotoolbox`) for several cameras |
+
+See [OG_LAN_ENGINE.md](OG_LAN_ENGINE.md) for implementation details, timing notes and verification
+commands.
 
 ## Basic Usage
 
